@@ -529,8 +529,9 @@ func (cad *cadEngine) UpdatePackageRevision(ctx context.Context, repositoryObj *
 		return nil, fmt.Errorf("resourceVersion must be specified for an update")
 	}
 
-	if newRV != oldObj.GetResourceVersion() {
-		return nil, apierrors.NewConflict(api.Resource("packagerevisions"), oldObj.GetName(), fmt.Errorf(OptimisticLockErrorMsg))
+	oldRV := oldObj.GetResourceVersion()
+	if newRV != oldRV {
+		return nil, apierrors.NewConflict(api.Resource("packagerevisions"), oldObj.GetName(), fmt.Errorf("%s, newRV %s, oldRV %s", OptimisticLockErrorMsg, newRV, oldRV))
 	}
 
 	repo, err := cad.cache.OpenRepository(ctx, repositoryObj)

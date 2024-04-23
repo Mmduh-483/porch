@@ -25,6 +25,8 @@ import (
 	porchapi "github.com/nephio-project/porch/api/porch/v1alpha1"
 	configapi "github.com/nephio-project/porch/api/porchconfig/v1alpha1"
 	api "github.com/nephio-project/porch/controllers/packagevariants/api/v1alpha1"
+	"k8s.io/client-go/tools/record"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/GoogleContainerTools/kpt-functions-sdk/go/fn"
 	kptfilev1 "github.com/nephio-project/porch/pkg/kpt/api/kptfile/v1"
@@ -52,6 +54,7 @@ func (o *Options) BindFlags(_ string, _ *flag.FlagSet) {}
 type PackageVariantReconciler struct {
 	client.Client
 	Options
+	recorder        record.EventRecorder
 }
 
 const (
@@ -70,6 +73,7 @@ const (
 //+kubebuilder:rbac:groups=config.porch.kpt.dev,resources=packagevariants/finalizers,verbs=update
 //+kubebuilder:rbac:groups=porch.kpt.dev,resources=packagerevisions,verbs=create;delete;get;list;patch;update;watch
 //+kubebuilder:rbac:groups=porch.kpt.dev,resources=packagerevisionresources,verbs=create;delete;get;list;patch;update;watch
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile implements the main kubernetes reconciliation loop.
 func (r *PackageVariantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -150,6 +154,10 @@ func (r *PackageVariantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	setTargetStatusConditions(pv, targets)
+
+	//for _, pr := range targets{
+	//  r.recorder.Event(pr, corev1.EventTypeNormal, "PackageRevisionReady", fmt.Sprintf("PackageVariant %s PackageRevision %s is ready", pv.Name, pr.Name))
+	//}
 
 	return ctrl.Result{}, nil
 }
@@ -338,6 +346,10 @@ func (r *PackageVariantReconciler) ensurePackageVariant(ctx context.Context,
 	}
 	klog.Infoln(fmt.Sprintf("package variant %q created package revision %q", pv.Name, newPR.Name))
 
+	if _, err := r.pollPackageRevisionResource(ctx, newPR); err != nil {
+		return nil, err
+	}
+
 	prr, changed, err := r.calculateDraftResources(ctx, pv, newPR)
 	if err != nil {
 		return nil, err
@@ -349,7 +361,7 @@ func (r *PackageVariantReconciler) ensurePackageVariant(ctx context.Context,
 		}
 		klog.Infoln(fmt.Sprintf("package variant %q applied mutations to package revision %q", pv.Name, newPR.Name))
 	}
-
+r.recorder.Event(newPR, corev1.EventTypeNormal, "PackageRevisionReady", fmt.Sprintf("PackageVariant %s PackageRevision %s is ready",  pv.Name, newPR.Name))
 	return []*porchapi.PackageRevision{newPR}, nil
 }
 
@@ -431,6 +443,11 @@ func (r *PackageVariantReconciler) findAndUpdateExistingRevisions(ctx context.Co
 			}
 			klog.Infoln(fmt.Sprintf("package variant %q updated package revision %q for new mutations", pv.Name, downstream.Name))
 		}
+
+		r.recorder.Event(downstreams[i], corev1.EventTypeNormal, "PackageRevisionReady", fmt.Sprintf("PackageVariant %s PackageRevision %s is ready",
+			pv.Name, downstreams[i].Name))
+
+
 	}
 	return downstreams, nil
 }
@@ -725,6 +742,8 @@ func (r *PackageVariantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	r.Client = mgr.GetClient()
+	r.recorder = mgr.GetEventRecorderFor("porch-controller")
+
 
 	//TODO: establish watches on resource types injected in all the Package Revisions
 	//      we own, and use those to generate requests
@@ -826,6 +845,24 @@ func (r *PackageVariantReconciler) calculateDraftResources(ctx context.Context,
 	klog.Infoln(fmt.Sprintf("PackageVariant %q, PackageRevision %q, resources unchanged", pv.Name, prr.Name))
 	return &prr, false, nil
 }
+
+func (r *PackageVariantReconciler) pollPackageRevisionResource(ctx context.Context, pr *porchapi.PackageRevision) (*porchapi.PackageRevisionResources, error) {
+	var prr porchapi.PackageRevisionResources
+	prrKey := types.NamespacedName{Name: pr.GetName(), Namespace: pr.GetNamespace()}
+	var err error
+
+	for i := 0; i < 5; i++ {
+		if err = r.Client.Get(ctx, prrKey, &prr); err != nil {
+			time.Sleep(time.Second)
+			continue
+		}
+
+		return &prr, nil
+	}
+
+	return &prr, err
+}
+
 
 func parseKptfile(kf string) (*kptfilev1.KptFile, error) {
 	ko, err := fn.ParseKubeObject([]byte(kf))
