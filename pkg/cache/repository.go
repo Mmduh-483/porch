@@ -149,6 +149,7 @@ func (r *cachedRepository) getCachedPackages(ctx context.Context, forceRefresh b
 	packages := r.cachedPackages
 	packageRevisions := r.cachedPackageRevisions
 	err := r.refreshRevisionsError
+	forceRefresh = true
 
 	if forceRefresh {
 		packages = nil
